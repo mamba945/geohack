@@ -1,0 +1,5 @@
+pypdf
+PyMuPDF
+easyocr
+numpy
+ollama

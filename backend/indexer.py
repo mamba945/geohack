@@ -1,24 +1,28 @@
 """
-Извлечение текста из отсканированных книг в папке data/.
+Извлечение текста из книг в папке data/ через PyMuPDF (fitz).
 
 Логика по каждой странице:
-  1. Пробуем достать текст через pypdf.
-  2. Если текста почти нет (слепой скан) — рендерим страницу в картинку
-     через PyMuPDF (fitz) и распознаём её EasyOCR.
+  1. Пробуем достать цифровой текстовый слой через page.get_text("text").
+  2. Если слой пустой (книга — отсканированные картинки, ...img.pdf),
+     рендерим страницу в изображение и распознаём её EasyOCR.
+  3. Любой текст (цифровой или OCR) чистим через clean_text():
+     склеиваем разорванные переносами слова, убираем лишние пробелы,
+     сохраняем структуру абзацев.
+
+Работаем на CPU. EasyOCR грузится лениво — только если реально
+встретился скан, чтобы не тормозить обработку нормальных PDF.
 
 Результат пишется одним файлом в data/processed_knowledge.json.
 
-Зависимости: pypdf, PyMuPDF, easyocr, numpy.
-PyMuPDF работает на Windows без стороннего софта (Poppler не нужен).
+Зависимости: PyMuPDF, easyocr, numpy.
 """
 
 import json
 import os
+import re
 
 import numpy as np
 import fitz  # PyMuPDF
-from pypdf import PdfReader
-import easyocr
 
 # Папка с книгами и итоговый файл
 DATA_DIR = "data"
@@ -30,23 +34,66 @@ FILES = [
     "geokniga-geologiya-i-geohimiya-nefti-i-gaza_6.img.pdf",
 ]
 
-# Ниже этой длины считаем страницу "слепым" сканом и идём в OCR
+# Сколько первых страниц каждой книги обрабатывать (быстрая сборка базы)
+MAX_PAGES = 10
+
+# Ниже этой длины считаем текстовый слой пустым и идём в OCR
 MIN_TEXT_LEN = 10
 
 # Увеличение при рендере страницы (2.0 ~ 144 DPI) — выше качество OCR
 ZOOM = 2.0
 
-# EasyOCR для русского языка (инициализируем один раз)
-reader = easyocr.Reader(["ru"])
+# Плейсхолдер для временной пометки границ абзацев
+PARA_MARK = "\x00"
+
+# EasyOCR-ридер инициализируется лениво (при первом скане)
+_ocr_reader = None
 
 
-def ocr_page(fitz_page):
+def get_ocr_reader():
+    """Ленивая инициализация EasyOCR (русский язык, CPU)."""
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+
+        print("Инициализирую EasyOCR (русский, CPU)...")
+        _ocr_reader = easyocr.Reader(["ru"], gpu=False)
+    return _ocr_reader
+
+
+def ocr_page(page):
     """Рендерит страницу PDF в картинку (numpy) и распознаёт текст."""
-    pix = fitz_page.get_pixmap(matrix=fitz.Matrix(ZOOM, ZOOM))
+    pix = page.get_pixmap(matrix=fitz.Matrix(ZOOM, ZOOM))
     # Пиксели в numpy-массив (height, width, каналы) для EasyOCR
     image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-    lines = reader.readtext(image, detail=0)
-    return "\n".join(lines).strip()
+    lines = get_ocr_reader().readtext(image, detail=0, paragraph=True)
+    return "\n".join(lines)
+
+
+def clean_text(text):
+    """Чистит сырой текст страницы, сохраняя структуру абзацев."""
+    # Нормализуем переносы строк
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Склеиваем слова, разорванные переносом с дефисом в конце строки
+    text = re.sub(r"-\n(\w)", r"\1", text)
+
+    # Двойной перенос = граница абзаца, временно помечаем плейсхолдером
+    text = re.sub(r"\n[ \t]*\n+", PARA_MARK, text)
+
+    # Одиночные переносы внутри абзаца заменяем на пробел (слова не рвутся)
+    text = text.replace("\n", " ")
+
+    # Возвращаем границы абзацев
+    text = text.replace(PARA_MARK, "\n\n")
+
+    # Убираем лишние пробелы внутри строк
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # Подчищаем пробелы вокруг переносов абзацев
+    text = re.sub(r" *\n\n *", "\n\n", text)
+
+    return text.strip()
 
 
 def main():
@@ -58,23 +105,29 @@ def main():
             print(f"Файл не найден, пропускаю: {file_path}")
             continue
 
-        pdf = PdfReader(file_path)
         doc = fitz.open(file_path)
-        for page_index, page in enumerate(pdf.pages):
+        for page_index, page in enumerate(doc):
             page_num = page_index + 1  # человеческая нумерация страниц
 
-            # Быстрое демо: только первые 5 страниц каждой книги
-            if page_num > 5:
+            # Ограничение на первые MAX_PAGES страниц каждой книги
+            if page_num > MAX_PAGES:
                 break
 
-            text = (page.extract_text() or "").strip()
-            if len(text) < MIN_TEXT_LEN:
-                text = ocr_page(doc[page_index])
+            # 1. Пробуем цифровой текстовый слой
+            raw_text = page.get_text("text")
+            source_kind = "текст"
+
+            # 2. Пусто (скан) — распознаём через OCR
+            if len(raw_text.strip()) < MIN_TEXT_LEN:
+                raw_text = ocr_page(page)
+                source_kind = "OCR"
+
+            text = clean_text(raw_text)
 
             knowledge.append(
                 {"source": filename, "page": page_num, "text": text}
             )
-            print(f"Файл: {filename} | Страница {page_num} обработана")
+            print(f"Файл: {filename} | Страница {page_num} обработана ({source_kind})")
 
         doc.close()
 

@@ -1,54 +1,53 @@
-"""
-Локальный поиск по знаниям + ответ через Ollama (без внешних API).
-
-Логика:
-  1. search_context — простой полнотекстовый поиск по словам запроса
-     в data/processed_knowledge.json (через .count() в нижнем регистре).
-  2. generate_answer — собирает контекст и просит локальную модель
-     qwen2.5:7b ответить строго по найденному тексту.
-
-Зависимости: ollama (плюс запущенный локально сервер Ollama с моделью qwen2.5:7b).
-"""
-
 import json
 import os
 
+import numpy as np
 import ollama
 
-# Итоговый файл со знаниями (его готовит indexer.py)
 DATA_DIR = "data"
 KNOWLEDGE_FILE = os.path.join(DATA_DIR, "processed_knowledge.json")
 
-# Локальная модель Ollama
 MODEL = "qwen2.5:7b"
+EMBED_MODEL = "nomic-embed-text"
+
+_client = ollama.Client(timeout=None)
+_knowledge_cache = None
+
+
+def _load_knowledge():
+    global _knowledge_cache
+    if _knowledge_cache is None:
+        with open(KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
+            _knowledge_cache = json.load(f)
+    return _knowledge_cache
+
+
+def _cosine_similarity(a, b):
+    a, b = np.array(a), np.array(b)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
 
 
 def search_context(query, top_n=2):
-    """Ищет top_n самых релевантных страниц по словам из query."""
-    with open(KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
-        knowledge = json.load(f)
+    knowledge = _load_knowledge()
 
-    # Разбиваем запрос на отдельные слова в нижнем регистре
-    words = query.lower().split()
+    resp = _client.embeddings(model=EMBED_MODEL, prompt=query)
+    q_emb = resp["embedding"]
 
     scored = []
     for page in knowledge:
-        text = page["text"].lower()
-        # Считаем, сколько раз слова запроса встречаются на странице
-        score = sum(text.count(word) for word in words)
-        if score > 0:
-            scored.append((score, page))
+        emb = page.get("embedding")
+        if emb is None:
+            continue
+        score = _cosine_similarity(q_emb, emb)
+        scored.append((score, page))
 
-    # Сортируем по убыванию релевантности и берём top_n
     scored.sort(key=lambda item: item[0], reverse=True)
     return [page for _, page in scored[:top_n]]
 
 
 def _build_messages(user_query):
-    """Собирает контекст из базы и формирует messages для Ollama."""
     pages = search_context(user_query, top_n=4)
 
-    # Склеиваем найденные страницы с указанием книги и страницы
     context_parts = []
     for page in pages:
         context_parts.append(
@@ -94,18 +93,12 @@ def _build_messages(user_query):
 
 
 def generate_answer(user_query):
-    """Собирает контекст и просит локальную модель ответить по нему."""
-    response = ollama.chat(model=MODEL, messages=_build_messages(user_query))
+    response = _client.chat(model=MODEL, messages=_build_messages(user_query))
     return response["message"]["content"]
 
 
 def generate_answer_stream(user_query):
-    """Потоковая версия: отдаёт ответ модели по кускам (для st.write_stream).
-
-    Используется stream=True, поэтому первые слова появляются на экране почти
-    сразу, не дожидаясь полной генерации (важно для CPU, где ответ идёт долго).
-    """
-    stream = ollama.chat(
+    stream = _client.chat(
         model=MODEL,
         messages=_build_messages(user_query),
         stream=True,

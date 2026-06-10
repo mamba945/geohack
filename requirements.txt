@@ -3,3 +3,4 @@ PyMuPDF
 easyocr
 numpy
 ollama
+streamlit

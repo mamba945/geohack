@@ -92,11 +92,6 @@ st.markdown(
             <div class="geo-logotype">GeoMind</div>
             <div class="geo-tagline">Локальный геологический ассистент — база нефтегазовых книг</div>
         </div>
-        <div class="geo-badges">
-            <span class="badge badge-ok">Local Model</span>
-            <span class="badge badge-lock">Air-Gapped</span>
-            <span class="badge badge-cpu">CPU / GPU</span>
-        </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -111,11 +106,47 @@ with tab_search:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    if not st.session_state.messages:
+        st.markdown(
+            """
+            <style>
+                .geomind-hero {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 50vh;
+                    text-align: center;
+                    padding: 2rem 1rem;
+                }
+                .geomind-hero h1 {
+                    font-size: 2.8rem;
+                    font-weight: 700;
+                    background: linear-gradient(135deg, #90cdf4 0%, #68d391 50%, #f6ad55 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    margin-bottom: 0.5rem;
+                }
+                .geomind-hero p {
+                    font-size: 1.05rem;
+                    color: #718096;
+                    max-width: 480px;
+                    line-height: 1.6;
+                }
+            </style>
+            <div class="geomind-hero">
+                <h1>GeoMind, приступим!</h1>
+                <p>Ваш геологический ассистент по нефтегазовой литературе. Задайте вопрос — я найду ответ в учебниках и процитирую источники.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    if user_query := st.chat_input("Задайте вопрос по геологии нефти и газа..."):
+    if user_query := st.chat_input("Спросите GeoMind..."):
         st.session_state.messages.append({"role": "user", "content": user_query})
         with st.chat_message("user"):
             st.markdown(user_query)
@@ -234,35 +265,3 @@ with tab_gap:
             gap_df = gap_df.set_index("Параметр")
             st.bar_chart(gap_df, color="#e06666")
 
-st.markdown("---")
-with st.expander("Техническая конфигурация системы"):
-    cfg_col1, cfg_col2 = st.columns([3, 1])
-
-    with cfg_col1:
-        st.markdown(
-            "| Параметр | Значение |\n"
-            "|:---|:---|\n"
-            "| Модель | Qwen2.5:7B (Ollama, Local) |\n"
-            "| Вычисления | CPU / GPU — без облака |\n"
-            "| Режим конфиденциальности | Air-Gapped — 100% offline |\n"
-            "| База знаний | `data/processed_knowledge.json` |\n"
-            "| Метод поиска | Полнотекстовый по геологическим книгам |"
-        )
-
-    with cfg_col2:
-        if st.button("Переиндексировать базу", use_container_width=True):
-            with st.spinner("Переиндексация..."):
-                result = subprocess.run(
-                    [sys.executable, "backend/indexer.py"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            if result.returncode == 0:
-                st.success("База знаний переиндексирована.")
-            else:
-                st.error("Ошибка при переиндексации.")
-            log = (result.stdout or "") + (result.stderr or "")
-            if log.strip():
-                st.code(log.strip(), language="text")

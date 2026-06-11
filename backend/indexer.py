@@ -11,15 +11,15 @@ DATA_DIR = "data"
 OUTPUT_FILE = os.path.join(DATA_DIR, "processed_knowledge.json")
 
 FILES = [
-    "geokniga-geologiya-i-geohimiya-nefti-i-gaza.img.pdf",
-    "geokniga-geologiya-i-geohimiya-nefti-i-gaza_6.img.pdf",
+    "Геология_нефти_и_газа_часть_страниц.pdf",
+    "Атлас 2020. том 1-6-45"
 ]
 
 MIN_TEXT_LEN = 10
 ZOOM = 2.0
 RENDER_WORKERS = 4
 EMBED_WORKERS = 8
-MAX_PAGES = 50  # set to None for full indexing
+MAX_PAGES = 40
 EMBED_MODEL = "nomic-embed-text"
 PARA_MARK = "\x00"
 
@@ -67,11 +67,16 @@ def clean_text(text):
     return text.strip()
 
 
-MAX_EMBED_CHARS = 4000
+CHUNK_CHARS = 700  
 
 def _embed_one(text):
-    resp = _ollama_client.embeddings(model=EMBED_MODEL, prompt=text[:MAX_EMBED_CHARS])
-    return resp["embedding"]
+    if not text.strip():
+        return [0.0] * 768
+    chunks = [text[i:i + CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)]
+    vecs = [_ollama_client.embeddings(model=EMBED_MODEL, prompt=c)["embedding"] for c in chunks]
+    avg = np.mean(vecs, axis=0)
+    norm = np.linalg.norm(avg)
+    return (avg / norm).tolist() if norm > 0 else avg.tolist()
 
 
 def embed_batch(texts):
@@ -127,7 +132,7 @@ def main():
     for filename in FILES:
         knowledge.extend(process_file(filename))
 
-    # Generate embeddings in parallel via Ollama (CUDA/RTX, no timeout)
+    
     texts = [p["text"] for p in knowledge]
     print(f"\nГенерация эмбеддингов ({EMBED_MODEL}, {EMBED_WORKERS} потоков, timeout=None)...")
     embeddings = embed_batch(texts)
